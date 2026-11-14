@@ -18,7 +18,7 @@
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
-    "fast-xml-parser": "5.12.0",
+    "fast-xml-parser": "5.12.1",
     "lucide-react": "1.31.0",
     "pdfjs-dist": "^6.5.438",
     "react": "19.2.6",
