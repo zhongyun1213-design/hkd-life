@@ -18,12 +18,12 @@ test('导入流水及批次可同步，旧客户端不能擦除原文',async()=>
 import {handleCapture} from '../sync-worker/capture.mjs';
 test('Apple Pay 接口验证权限、金额、币种、dryRun和幂等，保留已有账本',async()=>{
  const env={DB:fixture(),SYNC_TOKEN_HASH:await tokenHash(token)},s=emptyState();s.accounts.push({id:crypto.randomUUID(),name:'测试卡',currency:'HKD',opening:10000});await handleAPI(req('PUT',{revision:0,state:s}),env);
- const body={eventId:crypto.randomUUID(),accountName:'测试卡',currency:'HKD',amount:'12.34',merchant:'示例商户',dryRun:false};
+ const body={eventId:crypto.randomUUID(),accountName:'测试卡',currency:'HKD',amount:'12.34',merchant:'NETHAO LIMITED',dryRun:false};
  const send=(b,auth=true)=>handleCapture(new Request(origin+'/api/capture/apple-pay',{method:'POST',headers:auth?{Authorization:'Bearer '+token}:{},body:JSON.stringify(b)}),env,handleAPI);
  assert.equal((await send(body,false)).status,401);assert.equal((await send({...body,amount:'0'})).status,400);assert.equal((await send({...body,currency:'CNY'})).status,400);
  assert.equal((await(await send({...body,dryRun:true})).json()).dryRun,true);assert.equal((await(await handleAPI(req(),env)).json()).state.transactions.length,0);
  assert.equal((await send(body)).status,200);assert.equal((await(await send(body)).json()).duplicate,true);assert.equal((await send({...body,amount:'20'})).status,409);
- const saved=await(await handleAPI(req(),env)).json();assert.equal(saved.state.transactions.length,1);assert.equal(saved.state.transactions[0].amount,1234);assert.equal(saved.state.transactions[0].category,'其他');assert.equal(saved.state.accounts[0].opening,10000);
+ const saved=await(await handleAPI(req(),env)).json();assert.equal(saved.state.transactions.length,1);assert.equal(saved.state.transactions[0].amount,1234);assert.equal(saved.state.transactions[0].category,'娱乐');assert.equal(saved.state.accounts[0].opening,10000);
 });
 
 test('快捷指令字段错误准确指出字段，时间格式编号可通过UUID校验',async()=>{

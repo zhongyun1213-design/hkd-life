@@ -27,5 +27,5 @@ export async function readStatement(file:File,password=''){
   }catch(e:any){if(e.name==='PasswordException')throw Error('PDF 需要正确的打开密码，请在上方填写后重新读取');throw e;}
   finally{await task.destroy();}
  }
- throw Error('请选择 .xlsx 账单或文字版 .pdf 结单');
+ throw Error('请选择微信支付 .xlsx 或汇丰原始文字版 .pdf 结单');
 }
