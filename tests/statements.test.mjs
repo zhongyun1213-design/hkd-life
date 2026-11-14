@@ -1,0 +1,42 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {parseWeChat,parseHSBC,totals,cents,digest} from '../lib/statement-import.mjs';
+import {prepareImport,applyImport,importStatus,undoImport} from '../lib/import-apply.mjs';
+import {emptyState,balances,summary} from '../lib/finance.mjs';
+import {stateSchema} from '../lib/validation.mjs';
+import {protectImportHistory} from '../lib/import-history.mjs';
+import {workbookSheets} from '../lib/xlsx-rows.mjs';
+import * as XLSX from 'xlsx';
+const headers=['交易时间','交易类型','交易对方','商品','收/支','金额(元)','支付方式','当前状态','交易单号','商户单号','备注'];
+test('Excel 时间序号还原钟面时间，不随设备时区偏移',()=>{const sheet=XLSX.utils.aoa_to_sheet([headers,[45658.5,'其他','示例','示例','收入',1,'零钱','已到账','demo-time','','']]);const book={SheetNames:['Sheet1'],Sheets:{Sheet1:sheet}};const originalTZ=process.env.TZ;try{for(const tz of ['UTC','Asia/Hong_Kong','America/New_York']){process.env.TZ=tz;const row=workbookSheets(XLSX,book)[0].rows[1];assert.equal(row[0],'2025-01-01 12:00:00');}}finally{if(originalTZ===undefined)delete process.env.TZ;else process.env.TZ=originalTZ;}assert.equal(cents('HK$1,234.56'),123456);});
+const wechat=(extra=[])=>parseWeChat([{name:'Sheet1',rows:[['共3笔记录'],['收入：1笔 12.34元'],['支出：2笔 24.68元'],['中性交易：0笔 0.00元'],headers,['2026-01-02 10:00:00','商户消费','虚构商店','示例商品','支出',12.34,'零钱','已全额退款','demo-1','',''],['2026-01-02 11:00:00','商店-退款','虚构商店','示例商品','收入',12.34,'零钱','已全额退款','demo-1','',''],['2026-01-03 10:00:00','商户消费','虚构商店','示例商品','支出',12.34,'零钱','支付成功','demo-2','',''],...extra]}]);
+const item=(text,x,y)=>({text,x,y,width:20,height:7});
+const head=(y=100)=>[item('Date',59,y),item('Transaction Details',104,y),item('Deposit',350,y),item('Withdrawal',415,y),item('Balance',501,y)];
+function bank(){return [{number:1,width:595,height:842,items:[item('10 January 2026',400,60),item('123-000000-001',110,70),item('HKD Savings',59,85),...head(),item('31 Dec',59,120),item('B/F BALANCE',102,120),item('1,000.00',500,120),item('2 Jan',59,135),item('CASH REBATE',102,135),item('CREDIT AS ADVISED',102,144),item('0.50',365,144),item('POS MDC',102,154),item('SYNTHETIC SHOP',102,162),item('20.00',435,162),item('980.50',500,162),item('CASH REBATE',102,173)]},{number:2,width:595,height:842,items:[...head(),item('CREDIT AS ADVISED',102,120),item('0.50',365,120),item('POS MDC',102,130),item('SYNTHETIC SHOP',102,139),item('20.00',435,139),item('961.00',500,139),item('Foreign Currency Savings',59,160),item('CCY',59,180),item('Date',81,180),item('Transaction Details',118,180),item('Deposit',350,180),item('Withdrawal',415,180),item('Balance',501,180),item('CNY',59,200),item('31 Dec',80,200),item('B/F BALANCE',116,200),item('3.00',509,200),item('Total Relationship Balance',59,220)]}];}
+test('微信每笔入账，包括原消费与退款；汇总独立核对',()=>{const p=wechat();assert.equal(p.rows.length,3);assert.deepEqual([totals(p.rows).income,totals(p.rows).expense],[1234,2468]);assert.equal(p.errors.length,0);assert.equal(p.checks.every(c=>c.ok),true);assert.equal(p.rows[0].direction,'out');assert.equal(p.rows[1].direction,'in');});
+test('微信不跳过坏行；汇总不平时不能入账',async()=>{const p=wechat([['unparseable date']]);assert.ok(p.errors.length);await assert.rejects(applyImport(emptyState(),p,{}));});
+test('微信金额用整数分，失败交易保留为无现金变动记录',()=>{assert.equal(cents('￥1,234.56'),123456);const p=parseWeChat([{name:'Sheet1',rows:[headers,['2026-01-01','商户消费','示例','示例','支出',10,'零钱','支付失败','failed','','']]}]);assert.equal(p.rows[0].type,'movement');assert.equal(p.rows[0].direction,'none');assert.equal(p.rows[0].amount,1000);});
+test('汇丰跨页、省略日期、跨年、重复同额交易、外币期初均正确',()=>{const p=parseHSBC(bank());assert.deepEqual(p.errors,[]);assert.equal(p.rows.length,4);assert.equal(new Set(p.rows.map(r=>r.sourceKey)).size,4);assert.equal(p.rows[2].date,'2026-01-02');assert.equal(p.groups[0].openingDate,'2025-12-31');assert.equal(p.groups[0].closing,96100);assert.equal(p.groups[1].opening,300);assert.ok(p.checks.every(c=>c.ok));});
+test('汇丰遗漏一笔或列错时，余额校验阻止不完整入账',()=>{const pages=bank();pages[0].items=pages[0].items.filter(t=>t.text!=='20.00');const p=parseHSBC(pages);assert.ok(p.errors.length);assert.ok(p.checks.some(c=>!c.ok));});
+test('不将文件名中的月份当作结单日期，未知 PDF 明确拒绝',()=>{assert.ok(parseHSBC([{items:[]}]).errors.length);const p=parseHSBC(bank());assert.equal(p.period,'结单日 2026-01-10');});
+test('重复导入不重复记账，主动删除后也不随旧文件复活',async()=>{const p=await prepareImport(wechat(),'synthetic.xlsx',await digest('file'));const mappings=Object.fromEntries(p.groups.map(g=>[g.id,{account:'new',opening:0,name:g.name}]));const first=await applyImport(emptyState(),p,mappings);assert.equal(first.added,3);assert.equal(stateSchema.safeParse(first.state).success,true);const second=await applyImport(first.state,p,mappings);assert.equal(second.added,0);assert.equal(second.state.accounts.length,first.state.accounts.length);assert.equal(second.state.transactions.length,3);const deleted=structuredClone(first.state);deleted.transactions.pop();assert.equal(importStatus(p,deleted).every(s=>s==='duplicate'),true);const again=await applyImport(deleted,p,mappings);assert.equal(again.state.transactions.length,2);});
+test('同一数据不同文件名也按交易来源识别；同日同额两笔不被吞',async()=>{const p=await prepareImport(parseHSBC(bank()),'one.pdf',await digest('one')),p2=await prepareImport(parseHSBC(bank()),'two.pdf',await digest('two'));const maps=Object.fromEntries(p.groups.map(g=>[g.id,{account:'new',opening:g.opening,name:g.name}]));const a=await applyImport(emptyState(),p,maps),b=await applyImport(a.state,p2,maps);assert.equal(a.added,4);assert.equal(b.added,0);assert.equal(b.state.transactions.length,4);assert.equal(b.state.accounts.length,2);assert.equal(balances(a.state)[a.state.accounts.find(a=>a.currency==='HKD').id],96100);});
+test('指定已有账户不改变初始余额；全部流水原文和时间保留',async()=>{const p=await prepareImport(wechat(),'synthetic.xlsx',await digest('manual-map')),s=emptyState();const id=crypto.randomUUID();s.accounts.push({id,name:'已有账户',currency:'CNY',opening:5000});const maps=Object.fromEntries(p.groups.map(g=>[g.id,{account:id}]));const a=await applyImport(s,p,maps);assert.equal(a.state.accounts[0].opening,5000);assert.equal(a.state.accounts.length,1);assert.equal(a.state.transactions[0].source.raw['当前状态'],'已全额退款');assert.equal(a.state.transactions[0].source.timestamp,'2026-01-02 10:00:00');assert.throws(()=>protectImportHistory(a.state,{...a.state,transactions:a.state.transactions.map(t=>({...t,source:undefined}))}));});
+test('资金转入转出只改余额不算消费；撤销批次保留原有数据',async()=>{const p=await prepareImport(wechat(),'synthetic.xlsx',await digest('movement'));const maps=Object.fromEntries(p.groups.map(g=>[g.id,{account:'new',opening:5000,name:g.name}])),s=emptyState();s.settings.rate=1;const a=await applyImport(s,p,maps,{[p.rows[0].key]:{type:'movement',direction:'out'}});assert.equal(summary(a.state,'2026-01-03').spent,12.34);assert.equal(balances(a.state)[a.state.accounts[0].id],3766);const undone=undoImport(a.state,p.batchId);assert.equal(undone.transactions.length,0);assert.equal(undone.accounts.length,0);assert.equal(undone.imports.length,0);});
+
+for(const provider of ['wechat','hsbc'])test(provider+'：先导入短时期B，再导入长时期A，仅新增A-B并保留用户修改',async()=>{
+ const parsed=provider==='wechat'?wechat():parseHSBC(bank());
+ const short={...parsed,rows:parsed.rows.slice(1,3)};
+ const b=await prepareImport(short,'short.'+provider,await digest(provider+'short'));
+ const a=await prepareImport({...parsed,rows:[...parsed.rows].reverse()},'long-renamed.'+provider,await digest(provider+'long'));
+ const maps=Object.fromEntries(a.groups.map(g=>[g.id,{account:'new',opening:g.opening??0,name:g.name}]));
+ const first=await applyImport(emptyState(),b,maps);first.state.transactions[0].category='娱乐';first.state.transactions[0].note='用户修改的备注';
+ const original=structuredClone(first.state.transactions);
+ const second=await applyImport(first.state,a,maps);
+ assert.equal(second.added,a.rows.length-b.rows.length);assert.equal(second.duplicates,b.rows.length);
+ assert.deepEqual(second.state.transactions.slice(0,b.rows.length),original);
+ assert.equal(second.state.transactions.length,a.rows.length);
+ assert.equal(stateSchema.safeParse(second.state).success,true);
+ const third=await applyImport(second.state,a,maps);assert.equal(third.added,0);
+ const restored=await applyImport(undoImport(second.state,a.batchId),a,maps);assert.equal(restored.added,a.rows.length-b.rows.length);
+});

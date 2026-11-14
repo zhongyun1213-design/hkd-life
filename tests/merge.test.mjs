@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {emptyState} from '../lib/finance.mjs';
+import {mergeStates,same} from '../lib/merge.mjs';
+test('两台设备各新增一笔，合并保留两笔',()=>{const b=emptyState(),l=structuredClone(b),r=structuredClone(b);l.transactions.push({id:'l',amount:100});r.transactions.push({id:'r',amount:200});const m=mergeStates(b,l,r);assert.equal(m.conflicts.length,0);assert.equal(m.state.transactions.length,2);});
+test('云端删除，离线旧副本未改动，不会复活',()=>{const b=emptyState();b.accounts=[{id:'a',name:'账户'}];const l=structuredClone(b),r=structuredClone(b);r.accounts=[];assert.deepEqual(mergeStates(b,l,r).state.accounts,[]);});
+test('两端改同一字段需明确选择，不以时钟覆盖',()=>{const b=emptyState(),l=structuredClone(b),r=structuredClone(b);l.settings.daily=80;r.settings.daily=90;let m=mergeStates(b,l,r);assert.equal(m.conflicts[0].path,'/settings/daily');m=mergeStates(b,l,r,{'/settings/daily':'remote'});assert.equal(m.conflicts.length,0);assert.equal(m.state.settings.daily,90);});
+test('删除与修改冲突；可明确选择删除',()=>{const b=emptyState();b.accounts=[{id:'a',name:'旧账户'}];const l=structuredClone(b),r=structuredClone(b);l.accounts=[];r.accounts[0].name='新名称';const m=mergeStates(b,l,r);assert.equal(m.conflicts[0].path,'/accounts/a');assert.deepEqual(mergeStates(b,l,r,{'/accounts/a':'local'}).state.accounts,[]);});
+test('同一事件两端追加观察记录，保持远端前缀并合并新记录',()=>{const b=emptyState();b.events=[{id:'e',observations:[{id:'1',value:100}],reviews:[]}];const l=structuredClone(b),r=structuredClone(b);l.events[0].observations.push({id:'l',value:101});r.events[0].observations.push({id:'r',value:102});const m=mergeStates(b,l,r);assert.equal(m.conflicts.length,0);assert.deepEqual(m.state.events[0].observations.map(x=>x.id),['1','r','l']);});
+test('配置字段独立合并，比较不依赖对象键顺序',()=>{const b=emptyState(),l=structuredClone(b),r=structuredClone(b);l.settings.rate=1.2;r.settings.daily=100;const m=mergeStates(b,l,r);assert.equal(m.state.settings.rate,1.2);assert.equal(m.state.settings.daily,100);assert.equal(same({a:1,b:2},{b:2,a:1}),true);});
